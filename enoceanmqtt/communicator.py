@@ -36,6 +36,7 @@ class Communicator:
             raise Exception("Mandatory configuration not found: mqtt_host/enocean_port")
         mqtt_port = int(self.conf['mqtt_port']) if 'mqtt_port' in self.conf else 1883
         mqtt_keepalive = int(self.conf['mqtt_keepalive']) if 'mqtt_keepalive' in self.conf else 0
+        self.mqtt_prefix = self.conf['mqtt_prefix']
 
         # setup mqtt connection
         client_id = self.conf['mqtt_client_id'] if 'mqtt_client_id' in self.conf else ''
@@ -72,13 +73,15 @@ class Communicator:
         if self.enocean is not None and self.enocean.is_alive():
             self.enocean.stop()
 
+    def __publish(self, topic, msg, retain=False):
+        self.mqtt.publish("%s/%s" % (self.mqtt_prefix, topic), msg, retain)
+
     def _on_connect(self, mqtt_client, userdata, flags, rc):
         '''callback for when the client receives a CONNACK response from the MQTT server.'''
         if rc == 0:
             logging.info("Succesfully connected to MQTT broker.")
             # listen to enocean send requests
-            for cur_sensor in self.sensors:
-                mqtt_client.subscribe(cur_sensor['name']+'/req/#')
+            mqtt_client.subscribe("%s/#" % self.mqtt_prefix)
         else:
             logging.error("Error connecting to MQTT broker: %s", self.CONNECTION_RETURN_CODE[rc])
 
@@ -91,9 +94,12 @@ class Communicator:
 
     def _on_mqtt_message(self, mqtt_client, userdata, msg):
         '''the callback for when a PUBLISH message is received from the MQTT server.'''
+        #1 parse topic %prefix%/%device%
+        topic = msg.topic.split('/')
+
         # search for sensor
         for cur_sensor in self.sensors:
-            if cur_sensor['name'] in msg.topic:
+            if cur_sensor['name'] in topic[1]:
                 # store data for this sensor
                 if 'data' not in cur_sensor:
                     cur_sensor['data'] = {}
@@ -118,11 +124,12 @@ class Communicator:
             # does this sensor match?
             if enocean.utils.combine_hex(packet.sender) == cur_sensor['address']:
                 # found sensor configured in config file
+                mqtt_json['address'] = enocean.utils.to_hex_string(packet.sender)
                 if str(cur_sensor.get('publish_rssi')) in ("True", "true", "1"):
                     if mqtt_publish_json:
                         mqtt_json['RSSI'] = packet.dBm
                     else:
-                        self.mqtt.publish(cur_sensor['name']+"/RSSI", packet.dBm)
+                        self.__publish(cur_sensor['name']+"/RSSI", packet.dBm)
                 if not packet.learn or str(cur_sensor.get('log_learn')) in ("True", "true", "1"):
                     # data packet received
                     found_property = False
@@ -145,14 +152,14 @@ class Communicator:
                             if mqtt_publish_json:
                                 mqtt_json[prop_name] = value
                             else:
-                                self.mqtt.publish(cur_sensor['name']+"/"+prop_name, value, retain=retain)
+                                self.__publish(cur_sensor['name']+"/"+prop_name, value, retain=retain)
                     if not found_property:
                         logging.warn('message not interpretable: {}'.format(cur_sensor['name']))
                     elif mqtt_publish_json:
                         name = cur_sensor['name']
                         value = json.dumps(mqtt_json)
                         logging.debug("{}: Sent MQTT: {}".format(name, value))
-                        self.mqtt.publish(name, value, retain=retain)
+                        self.__publish(name, value, retain=retain)
                 else:
                     # learn request received
                     logging.info("learn request not emitted to mqtt")
