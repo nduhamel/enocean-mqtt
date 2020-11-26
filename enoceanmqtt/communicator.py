@@ -6,6 +6,8 @@ import queue
 import numbers
 import json
 import platform
+import sys
+import serial
 
 from enocean.communicators.serialcommunicator import SerialCommunicator
 from enocean.protocol.packet import Packet, RadioPacket
@@ -26,7 +28,7 @@ class Communicator:
         "bad username or password",
         "not authorised",
     ]
-    
+
     def __init__(self, config, sensors):
         self.conf = config
         self.sensors = sensors
@@ -64,7 +66,11 @@ class Communicator:
         self.mqtt.loop_start()
 
         # setup enocean communication
-        self.enocean = SerialCommunicator(self.conf['enocean_port'])
+        try:
+            self.enocean = SerialCommunicator(self.conf['enocean_port'])
+        except serial.serialutil.SerialException:
+            logging.exception('Serial Error')
+            sys.exit(1)
         self.enocean.start()
         # sender will be automatically determined
         self.enocean_sender = None
@@ -96,18 +102,27 @@ class Communicator:
         '''the callback for when a PUBLISH message is received from the MQTT server.'''
         #1 parse topic %prefix%/%device%
         topic = msg.topic.split('/')
+        if len(topic) < 3 or topic[2] != 'cmd':
+            return
 
         # search for sensor
         for cur_sensor in self.sensors:
             if cur_sensor['name'] in topic[1]:
-                # store data for this sensor
-                if 'data' not in cur_sensor:
-                    cur_sensor['data'] = {}
-                prop = msg.topic[len(cur_sensor['name']+"/req/"):]
-                try:
-                    cur_sensor['data'][prop] = int(msg.payload)
-                except ValueError:
-                    logging.warning("Cannot parse int value for %s: %s", msg.topic, msg.payload)
+                rorg  = cur_sensor['rorg']
+                rorg_func = cur_sensor['func']
+                rorg_type = cur_sensor['type']
+
+                payload = json.loads(msg.payload)
+                command = payload.pop('CMD',1)
+
+                packet = RadioPacket.create(rorg=rorg,
+                                            rorg_func=rorg_func,
+                                            rorg_type=rorg_type,
+                                            sender=self.enocean.base_id,
+                                            destination=cur_sensor['address'],
+                                            command=command,
+                                            **payload)
+                self.enocean.send(packet)
 
     def _on_mqtt_publish(self, mqtt_client, userdata, mid):
         '''the callback for when a PUBLISH message is successfully sent to the MQTT server.'''
@@ -122,7 +137,7 @@ class Communicator:
         # loop through all configured devices
         for cur_sensor in self.sensors:
             # does this sensor match?
-            if enocean.utils.combine_hex(packet.sender) == cur_sensor['address']:
+            if packet.sender == cur_sensor['address']:
                 # found sensor configured in config file
                 mqtt_json['address'] = enocean.utils.to_hex_string(packet.sender)
                 if str(cur_sensor.get('publish_rssi')) in ("True", "true", "1"):
@@ -208,7 +223,7 @@ class Communicator:
         # first, look whether we have this sensor configured
         found_sensor = False
         for cur_sensor in self.sensors:
-            if enocean.utils.combine_hex(packet.sender) == cur_sensor['address']:
+            if packet.sender == cur_sensor['address']:
                 found_sensor = cur_sensor
         
         # skip ignored sensors

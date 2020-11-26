@@ -10,6 +10,8 @@ import copy
 import argparse
 from configparser import ConfigParser
 
+from enocean.utils import from_hex_string
+
 from enoceanmqtt.communicator import Communicator
 
 conf = {
@@ -55,10 +57,10 @@ def load_config_file(config_files):
             else:
                 new_sens = {'name': section}
                 for key in conf[section]:
-                    try:
+                    if key in ('address', 'rorg', 'func', 'type'):
+                        new_sens[key] = from_hex_string(conf[section][key])
+                    else:
                         new_sens[key] = int(conf[section][key], 0)
-                    except KeyError:
-                        new_sens[key] = None
                 sensors.append(new_sens)
                 logging.debug("Created sensor: {}".format(new_sens))
 
@@ -72,7 +74,7 @@ def load_config_file(config_files):
 
 def setup_logging(log_filename='', log_file_level=logging.INFO, debug=False):
     # create formatter
-    log_formatter = logging.Formatter('%(asctime)s %(levelname)s: %(message)s')
+    log_formatter = logging.Formatter('%(asctime)s %(module)s %(levelname)s: %(message)s')
 
     # set root logger to lowest log level
     logging.getLogger().setLevel(logging.DEBUG if debug else log_file_level)

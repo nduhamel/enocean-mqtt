@@ -11,3 +11,4 @@ man
 MANIFEST
 dist
 *.priv
+test.conf
